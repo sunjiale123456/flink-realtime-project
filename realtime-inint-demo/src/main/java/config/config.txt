@@ -1,0 +1,3 @@
+{"dbBase": "ods","table": "student","meta": {"id": "int","name": "varchar(255)","score": "int","age": "int"},"primary": ["id"],"ts_ms": 1752546172306}
+{"dbBase": "dwd","table": "school","meta": {"id": "int","name": "varchar(255)"},"primary": ["id"],"ts_ms": 1752546172306}
+{"dbBase": "ods","table": "student_info","meta": {"id": "int","name": "varchar(255)"},"primary": ["id"],"ts_ms": 1752546172306}
