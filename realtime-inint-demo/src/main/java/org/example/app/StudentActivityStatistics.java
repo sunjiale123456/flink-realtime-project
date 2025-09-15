@@ -1,5 +1,7 @@
 package org.example.app;
+import org.apache.flink.api.common.functions.AggregateFunction;
 import org.apache.flink.api.common.functions.MapFunction;
+import org.apache.flink.api.common.functions.RichAggregateFunction;
 import org.apache.flink.api.java.tuple.Tuple5;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -7,18 +9,18 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.datastream.KeyedStream;
 import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
-import org.apache.flink.streaming.api.functions.windowing.WindowFunction;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingProcessingTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
-import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
-import org.apache.flink.util.Collector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import sun.rmi.runtime.Log;
 
 import java.io.Serializable;
 import java.sql.*;
-import java.text.SimpleDateFormat;
-import java.util.Date;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+
 
 public class StudentActivityStatistics {
     private static final Logger LOG = LoggerFactory.getLogger(StudentActivityStatistics.class);
@@ -35,7 +37,7 @@ public class StudentActivityStatistics {
             @Override
             public void run(SourceContext<String> sourceContext) throws Exception {
                 while (true){
-                    int id = (int)(Math.random()*10);
+                    int id = (int)(Math.random()*3);
                     String  data = id+",王"+id+",01,"+(int)(Math.random()*5)+","+(int)(Math.random()*5);
                     sourceContext.collect(data);
                     LOG.info(data);
@@ -67,47 +69,81 @@ public class StudentActivityStatistics {
         // 按键分区（按学生ID）
         KeyedStream<Tuple5<String, String, String, Integer,Integer>, String> keyedData = activityData.keyBy(value -> value.f0);
 
+
+
         // 应用15分钟的滚动窗口（基于处理时间）
         DataStream<StudentActivityResult> result = keyedData.window(TumblingProcessingTimeWindows.of(Time.minutes(1)))
-                .apply(new WindowFunction<Tuple5<String, String, String, Integer,Integer>, StudentActivityResult, String, TimeWindow>() {
+                .aggregate(new AggregateFunction<Tuple5<String, String, String, Integer, Integer>, ActivityAccumulatorBean, StudentActivityResult>() {
+
+
+                    // 在apply中使用
+                    String windowStart = "";
+
+
+                    // 方法1: createAccumulator()        -- 最先执行
+                    // 功能：创建初始累加器对象
+                    // 执行时机：每个窗口/key第一次处理数据时
                     @Override
-                    public void apply(String studentId, TimeWindow window,
-                                      Iterable<Tuple5<String, String, String, Integer,Integer>> input,
-                                      Collector<StudentActivityResult> out) throws Exception {
+                    public ActivityAccumulatorBean createAccumulator() {
+                        // 创建空累加器对象
+                        ActivityAccumulatorBean acc = new ActivityAccumulatorBean();
+                        return acc;
+                    }
 
-                        int totalScore = 0;
-                        int totalTimeCost = 0;
-                        int activityCount = 0;
-                        String studentName = "";
-                        String classId = "";
-
-                        // 计算累计得分和耗时
-                        for (Tuple5<String, String, String, Integer,Integer> activity : input) {
-                            totalScore += activity.f3;
-                            totalTimeCost+= activity.f4;
-                            activityCount++;
-                            studentName=activity.f1;
-                            classId=activity.f2;
+                    // 方法2: add()                     -- 每来一条数据执行一次
+                    // 功能：向累加器添加新数据
+                    // 执行时机：每条新数据到达窗口时
+                    @Override
+                    public ActivityAccumulatorBean add(Tuple5<String, String, String, Integer, Integer> tp5, ActivityAccumulatorBean acc) {
+                        // 累计分数和耗时
+                        acc.totalScore+=tp5.f3;
+                        acc.totalTimeCost+=tp5.f4;
+                        acc.activityCount++;
+                        if(acc.studentId.isEmpty()){
+                            acc.studentId=tp5.f0;
+                            acc.studentName= tp5.f1;
+                            acc.classId= tp5.f2;
+                            DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
+                            windowStart = Instant.ofEpochMilli(System.currentTimeMillis())
+                                    .atZone(ZoneId.systemDefault())
+                                    .format(formatter);
                         }
+                        LOG.warn("累加器处理数据 {} " + tp5);
+                        return acc;
+                    }
 
-                        // 格式化窗口时间
-                        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm");
-                        String windowStart = sdf.format(new Date(window.getStart()));
-                        String windowEnd = sdf.format(new Date(window.getEnd()));
+                    // 方法3: getResult()               -- 窗口结束时执行
+                    // 功能：从累加器生成最终结果
+                    // 执行时机：窗口关闭触发计算时
+                    @Override
+                    public StudentActivityResult getResult(ActivityAccumulatorBean acc) {
 
-                        // 输出结果
-                        out.collect(new StudentActivityResult(
-                                studentId,
-                                studentName,
-                                classId,
+                        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
+
+                        StudentActivityResult studentActivityResult = new StudentActivityResult(
+                                acc.studentId,
+                                acc.studentName,
+                                acc.classId,
                                 windowStart,
-                                windowEnd,
-                                totalScore,
-                                totalTimeCost,
-                                activityCount
-                        ));
+                                Instant.ofEpochMilli(System.currentTimeMillis())
+                                        .atZone(ZoneId.systemDefault())
+                                        .format(formatter),
+                                acc.totalScore,
+                                acc.totalTimeCost,
+                                acc.activityCount
+                        );
+                        LOG.warn( Instant.ofEpochMilli(System.currentTimeMillis())
+                                .atZone(ZoneId.systemDefault())
+                                .format(formatter)+" 数据聚合之后 ： " +studentActivityResult);
+                        return studentActivityResult;
+                    }
+
+                    @Override
+                    public ActivityAccumulatorBean merge(ActivityAccumulatorBean acc, ActivityAccumulatorBean acc1) {
+                        return null;
                     }
                 });
+
 
         // 打印结果到控制台
         result.addSink(new RichSinkFunction<StudentActivityResult>() {
@@ -185,7 +221,16 @@ public class StudentActivityStatistics {
         env.execute("Student Activity Statistics (Processing Time)");
     }
 
-    // Time)");
+}
+// 1. 定义累加器类（Accumulator）
+class ActivityAccumulatorBean implements Serializable{
+    private static final long serialVersionUID = -1234567;
+    public int totalScore = 0;
+    public int totalTimeCost = 0;
+    public int activityCount = 0;
+    public String studentName = "";
+    public String studentId="";
+    public String classId = "";
 }
 
 // 自定义结果类（与之前相同）
@@ -228,6 +273,6 @@ class StudentActivityResult implements Serializable {
         ", activityCount=" + activityCount +
         '}';
         }
-        }
+}
 
 
