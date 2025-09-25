@@ -140,9 +140,7 @@ public class DimApplication {
                             List<String> columnList = Arrays.asList(sinkColumns.split(","));
                             Set<String> keySet = jsonObjectData.keySet();
                             keySet.removeIf(data -> ! columnList.contains(data) );
-
-
-
+                            
                             //在向下游传递数据前，补充对维度数据的操作类型属性
                             String type = jsonObject.getString("type");
                             jsonObjectData.put("type",type);
